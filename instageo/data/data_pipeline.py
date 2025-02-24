@@ -117,6 +117,11 @@ def create_and_save_chips_with_seg_maps(
         f"{tile_name_splits[5]}_{tile_name_splits[2]}"
     )
     date_id = df.iloc[0]["date"].strftime("%Y%m%d")
+    labels_available = True if "label" in df.columns else False
+    labels = None
+    if labels_available:
+        labels = list(df["label"])
+
     chips = []
     seg_maps: list[str | None] = []
 
@@ -164,7 +169,7 @@ def create_and_save_chips_with_seg_maps(
         seg_map.rio.to_raster(seg_map_filename)
         chips.append(chip_name)
         chip.rio.to_raster(chip_filename)
-    return chips, seg_maps
+    return chips, seg_maps, labels
 
 
 def apply_mask(

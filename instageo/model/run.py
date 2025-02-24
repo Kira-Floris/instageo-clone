@@ -40,12 +40,13 @@ from tqdm import tqdm
 
 from instageo.model.dataloader import (
     InstaGeoDataset,
+    InstaGeoClassificationDataset,
     process_and_augment,
     process_data,
     process_test,
 )
 from instageo.model.infer_utils import chip_inference, sliding_window_inference
-from instageo.model.model import PrithviSeg
+from instageo.model.model import PrithviSeg, PrithviReg
 
 pl.seed_everything(seed=1042, workers=True)
 torch.backends.cudnn.deterministic = True
@@ -449,6 +450,237 @@ class PrithviSegmentationModule(pl.LightningModule):
             "recall_per_class": recall_per_class,
         }
 
+class PrithviRegressionModule(pl.LightningModule):
+    """Prithvi Segmentation PyTorch Lightning Module."""
+
+    def __init__(
+        self,
+        image_size: int = 224,
+        learning_rate: float = 1e-4,
+        freeze_backbone: bool = True,
+        temporal_step: int = 1,
+        class_weights: List[float] = [1, 2],
+        ignore_index: int = -100,
+        weight_decay: float = 1e-2,
+    ) -> None:
+        """Initialization.
+
+        Initialize the PrithviRegressionModule, a PyTorch Lightning module for image
+        segmentation.
+
+        Args:
+            image_size (int): Size of input image.
+            temporal_step (int): Number of temporal steps for multi-temporal input.
+            learning_rate (float): Learning rate for the optimizer.
+            freeze_backbone (bool): Flag to freeze ViT transformer backbone weights.
+            class_weights (List[float]): Class weights for mitigating class imbalance.
+            ignore_index (int): Class index to ignore during loss computation.
+            weight_decay (float): Weight decay for L2 regularization.
+        """
+        super().__init__()
+        self.net = PrithviReg(
+            image_size=image_size,
+            temporal_step=temporal_step,
+            freeze_backbone=freeze_backbone,
+        )
+        self.criterion = nn.MSELoss()
+        self.learning_rate = learning_rate
+        self.ignore_index = ignore_index
+        self.weight_decay = weight_decay
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Define the forward pass of the model.
+
+        Args:
+            x (torch.Tensor): Input tensor for the model.
+
+        Returns:
+            torch.Tensor: Output tensor from the model.
+        """
+        return self.net(x)
+
+    def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
+        """Perform a training step.
+
+        Args:
+            batch (Any): Input batch data.
+            batch_idx (int): Index of the batch.
+
+        Returns:
+            torch.Tensor: The loss value for the batch.
+        """
+        inputs, targets = batch
+        outputs = self.forward(inputs)
+        loss = self.criterion(outputs, targets.long())
+        self.log_metrics(outputs, targets, "train", loss)
+        return loss
+
+    def validation_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
+        """Perform a validation step.
+
+        Args:
+            batch (Any): Input batch data.
+            batch_idx (int): Index of the batch.
+
+        Returns:
+            torch.Tensor: The loss value for the batch.
+        """
+        inputs, targets = batch
+        outputs = self.forward(inputs)
+        loss = self.criterion(outputs, targets.long())
+        self.log_metrics(outputs, targets, "val", loss)
+        return loss
+
+    def test_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
+        """Perform a test step.
+
+        Args:
+            batch (Any): Input batch data.
+            batch_idx (int): Index of the batch.
+
+        Returns:
+            torch.Tensor: The loss value for the batch.
+        """
+        inputs, targets = batch
+        outputs = self.forward(inputs)
+        loss = self.criterion(outputs, targets.long())
+        self.log_metrics(outputs, targets, "test", loss)
+        return loss
+
+    def predict_step(self, batch: Any) -> torch.Tensor:
+        """Perform a prediction step.
+
+        Args:
+            batch (Any): Input batch data.
+
+        Returns:
+            torch.Tensor: The loss value for the batch.
+        """
+        prediction = self.forward(batch)
+        return prediction
+
+    def configure_optimizers(
+        self,
+    ) -> Tuple[
+        List[torch.optim.Optimizer], List[torch.optim.lr_scheduler._LRScheduler]
+    ]:
+        """Configure the model's optimizers and learning rate schedulers.
+
+        Returns:
+            Tuple[List[torch.optim.Optimizer], List[torch.optim.lr_scheduler]]:
+            A tuple containing the list of optimizers and the list of LR schedulers.
+        """
+        optimizer = torch.optim.AdamW(
+            self.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
+        )
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer, T_0=10, T_mult=2, eta_min=0
+        )
+        return [optimizer], [scheduler]
+
+    def log_metrics(
+        self,
+        predictions: torch.Tensor,
+        targets: torch.Tensor,
+        stage: str,
+        loss: torch.Tensor,
+    ) -> None:
+        """Log all metrics for any stage.
+
+        Args:
+            predictions(torch.Tensor): Prediction tensor from the model.
+            targets(torch.Tensor): Target mask.
+            stage (str): One of train, val and test stages.
+            loss (torch.Tensor): Loss value.
+
+        Returns:
+            None.
+        """
+        out = self.compute_metrics(predictions, targets)
+        self.log(
+            f"{stage}_loss",
+            loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+        )
+        self.log(
+            f"{stage}_MSE",
+            out["mse"],
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+        )
+        self.log(
+            f"{stage}_MAE",
+            out["mae"],
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+        )
+        self.log(
+            f"{stage}_RMSE",
+            out["rmse"],
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+        )
+        self.log(
+            f"{stage}_MAPE",
+            out["mape"],
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+        )
+        self.log(
+            f"{stage}_R2",
+            out["r2"],
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+        )
+
+    def compute_metrics(
+        self, pred_mask: torch.Tensor, gt_mask: torch.Tensor
+    ) -> dict[str, List[float]]:
+        """Calculate Metrics.
+
+        The computed metrics includes Intersection over Union (IoU), Accuracy, Precision, Recall and
+        ROC-AUC.
+
+        Args:
+            pred_mask (np.array): Predicted segmentation mask.
+            gt_mask (np.array): Ground truth segmentation mask.
+
+        Returns:
+            dict: A dictionary containing 'iou', 'overall_accuracy', and
+                'accuracy_per_class', 'precision_per_class' and 'recall_per_class'.
+        """
+        no_ignore = gt_mask.ne(self.ignore_index).to(self.device)
+        pred_mask = pred_mask.masked_select(no_ignore).cpu().numpy()
+        gt_mask = gt_mask.masked_select(no_ignore).cpu().numpy()
+
+        # Compute Regression Metrics
+        mse = metrics.mean_squared_error(gt_mask, pred_mask)
+        mae = metrics.mean_absolute_error(gt_mask, pred_mask)
+        rmse = np.sqrt(mse)
+        mape = np.mean(np.abs((gt_mask - pred_mask) / gt_mask)) * 100 if np.any(gt_mask) else 0.0
+        r2 = metrics.r2_score(gt_mask, pred_mask)
+
+        return {
+            "mse": mse,
+            "mae": mae,
+            "rmse": rmse,
+            "mape": mape,
+            "r2": r2
+        }
+
 
 def compute_mean_std(data_loader: DataLoader) -> Tuple[List[float], List[float]]:
     """Compute the mean and standard deviation of a dataset.
@@ -509,6 +741,15 @@ def main(cfg: DictConfig) -> None:
     train_filepath = cfg.train_filepath
     test_filepath = cfg.test_filepath
     checkpoint_path = cfg.checkpoint_path
+    
+    try:
+        task = cfg.task
+        if task == "regression":
+            model_class = PrithviRegressionModule
+        elif task == "classification":
+            model_class = PrithviSegmentationModule
+    except:
+        model_class = PrithviSegmentationModule
 
     if cfg.mode == "stats":
         train_dataset = InstaGeoDataset(
@@ -538,9 +779,23 @@ def main(cfg: DictConfig) -> None:
         print(std)
         exit(0)
 
+    if cfg.mode == "summary":
+        from torchsummary import summary
+
+        model = model_class()
+        print(summary(model, (6, 1, 224, 224)))
+
+
     if cfg.mode == "train":
         check_required_flags(["root_dir", "train_filepath", "valid_filepath"], cfg)
-        train_dataset = InstaGeoDataset(
+        
+        def check_num_classess(file_path):
+            import pandas as pd
+            df = pd.read_csv(file_path)
+            assert cfg.model.num_classes == len(list(df["Label"])), "Number of classes in CSV file does not match the one in config"
+        # check_num_classess(train_filepath)
+
+        train_dataset = InstaGeoClassificationDataset(
             filename=train_filepath,
             input_root=root_dir,
             preprocess_func=partial(
@@ -557,7 +812,7 @@ def main(cfg: DictConfig) -> None:
             constant_multiplier=cfg.dataloader.constant_multiplier,
         )
 
-        valid_dataset = InstaGeoDataset(
+        valid_dataset = InstaGeoClassificationDataset(
             filename=valid_filepath,
             input_root=root_dir,
             preprocess_func=partial(
@@ -601,15 +856,27 @@ def main(cfg: DictConfig) -> None:
 
         logger = TensorBoardLogger(hydra_out_dir, name="instageo")
 
-        trainer = pl.Trainer(
-            accelerator=get_device(),
-            max_epochs=cfg.train.num_epochs,
-            callbacks=[checkpoint_callback],
-            logger=logger,
-        )
+        inputs, labels = valid_loader
+        print(f"Inputs: {inputs[0].shape}, Len: {len(inputs)}")
+        print(f"Labels: {labels[0].shape}, Len: {len(labels)}")
 
-        # run training and validation
-        trainer.fit(model, train_loader, valid_loader)
+        # trainer = pl.Trainer(
+        #     accelerator=get_device(),
+        #     max_epochs=cfg.train.num_epochs,
+        #     callbacks=[checkpoint_callback],
+        #     logger=logger,
+        # )
+
+        # trainer = pl.Trainer(
+        #     accelerator=get_device(),
+        #     max_epochs=cfg.train.num_epochs,
+        #     callbacks=[checkpoint_callback],
+        #     logger=logger,
+        #     fast_dev_run=True
+        # )
+
+        # # run training and validation
+        # trainer.fit(model, train_loader, valid_loader)
 
     elif cfg.mode == "eval":
         check_required_flags(["root_dir", "test_filepath", "checkpoint_path"], cfg)

@@ -28,7 +28,7 @@ class GDALOptions(BaseSettings):
 
     CPL_VSIL_CURL_ALLOWED_EXTENSIONS: str = ".tif"
     GDAL_HTTP_AUTH: str = "BEARER"
-    GDAL_HTTP_BEARER: str = earthaccess.get_edl_token().get("access_token")
+    # GDAL_HTTP_BEARER: str = earthaccess.get_edl_token().get("access_token")
     GDAL_DISABLE_READDIR_ON_OPEN: str = "EMPTY_DIR"
     GDAL_HTTP_MAX_RETRY: str = "10"
     GDAL_HTTP_RETRY_DELAY: str = "0.5"

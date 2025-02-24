@@ -153,7 +153,7 @@ def setup() -> None:
 
     Configures relevant GDAL options for reading COGs
     """
-    earthaccess.login(persist=True)
+    earthaccess.login(persist=True, strategy="netrc")
     env = rasterio.Env(**GDALOptions().model_dump())
     env.__enter__()
 
@@ -167,6 +167,7 @@ def main(argv: Any) -> None:
     """
     del argv
     data = pd.read_csv(FLAGS.dataframe_path)
+    print(data.columns)
     data["date"] = (
         pd.to_datetime(data["date"]) - pd.offsets.MonthBegin(1)
         if FLAGS.shift_to_month_start
@@ -229,6 +230,7 @@ def main(argv: Any) -> None:
         logging.info("Creating Chips and Segmentation Maps")
         all_chips = []
         all_seg_maps = []
+        all_labels = []
         os.makedirs(os.path.join(FLAGS.output_directory, "chips"), exist_ok=True)
         os.makedirs(os.path.join(FLAGS.output_directory, "seg_maps"), exist_ok=True)
         with dask.distributed.Client() as client:
@@ -242,7 +244,7 @@ def main(argv: Any) -> None:
                     & (sub_data["mgrs_tile_id"].str.contains(tile_id.strip("T")))
                 ]
                 try:
-                    chips, seg_maps = create_and_save_chips_with_seg_maps(
+                    chips, seg_maps, labels = create_and_save_chips_with_seg_maps(
                         data_reader=(
                             hls_utils.open_hls_cogs
                             if FLAGS.processing_method == "cog"
@@ -264,6 +266,8 @@ def main(argv: Any) -> None:
                     )
                     all_chips.extend(chips)
                     all_seg_maps.extend(seg_maps)
+                    all_labels.extend(labels)
+
                 except rasterio.errors.RasterioIOError as e:
                     logging.error(
                         f"Error {e} when reading dataset containing: {hls_tile_dict}"
@@ -271,7 +275,7 @@ def main(argv: Any) -> None:
                 except IndexError as e:
                     logging.error(f"Error {e} when processing {key}")
         logging.info("Saving dataframe of chips and segmentation maps.")
-        pd.DataFrame({"Input": all_chips, "Label": all_seg_maps}).to_csv(
+        pd.DataFrame({"Input": all_chips, "Label": all_seg_maps, "classes": labels}).to_csv(
             os.path.join(FLAGS.output_directory, "hls_chips_dataset.csv")
         )
 

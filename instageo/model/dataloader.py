@@ -346,6 +346,27 @@ def load_data_from_csv(fname: str, input_root: str) -> List[Tuple[str, str | Non
                 continue
     return file_paths
 
+def load_classification_data_from_csv(fname: str, input_root: str) -> List[Tuple[str, str | None]]:
+    """Load data file paths from a CSV file.
+
+    Args:
+        fname (str): Filename of the CSV file.
+        input_root (str): Root directory for input images and labels.
+
+    Returns:
+        List[Tuple[str, str]]: A list of tuples, each containing file paths for input
+        image and label image.
+    """
+    dta = []
+    data = pd.read_csv(fname)
+    label_present = True if "Label" in data.columns else False
+    for _, row in data.iterrows():
+        im_path = os.path.join(input_root, row["Input"])
+        label = row['Label']
+        dta.append((im_path, label))
+
+    return dta
+
 
 class InstaGeoDataset(torch.utils.data.Dataset):
     """InstaGeo PyTorch Dataset for Loading and Handling HLS Data."""
@@ -410,6 +431,74 @@ class InstaGeoDataset(torch.utils.data.Dataset):
             return self.preprocess_func(arr_x, arr_y), im_fname
         else:
             return self.preprocess_func(arr_x, arr_y)
+
+    def __len__(self) -> int:
+        """Return length of dataset."""
+        return len(self.file_paths)
+
+
+class InstaGeoClassificationDataset(torch.utils.data.Dataset):
+    """InstaGeo PyTorch Dataset for Loading and Handling HLS Data."""
+
+    def __init__(
+        self,
+        filename: str,
+        input_root: str,
+        preprocess_func: Callable,
+        no_data_value: int | None,
+        replace_label: Tuple,
+        reduce_to_zero: bool,
+        constant_multiplier: float,
+        bands: List[int] | None = None,
+        include_filenames: bool = False,
+    ):
+        """Dataset Class for loading and preprocessing the dataset.
+
+        Args:
+            filename (str): Filename of the CSV file containing data paths.
+            input_root (str): Root directory for input images and labels.
+            preprocess_func (Callable): Function to preprocess the data.
+            bands (List[int]): Indices of bands to select from array.
+            no_data_value (int | None): NODATA value in image raster.
+            reduce_to_zero (bool): Reduces the label index to start from Zero.
+            replace_label (Tuple): Tuple of value to replace and the replacement value.
+            constant_multiplier (float): Constant multiplier for image.
+            include_filenames (bool): Flag that determines whether to return filenames.
+
+        """
+        self.input_root = input_root
+        self.preprocess_func = preprocess_func
+        self.bands = bands
+        self.file_paths = load_classification_data_from_csv(filename, input_root)
+        self.no_data_value = no_data_value
+        self.replace_label = replace_label
+        self.reduce_to_zero = reduce_to_zero
+        self.constant_multiplier = constant_multiplier
+        self.include_filenames = include_filenames
+
+    def __getitem__(self, i: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Retrieves a sample from dataset.
+
+        Args:
+            i (int): Sample index to retrieve.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: A tuple of tensors representing the
+            processed images and label.
+        """
+        im_fname, labels = self.file_paths[i]
+        arr_x, _ = process_data(
+            im_fname,
+            no_data_value=self.no_data_value,
+            replace_label=self.replace_label,
+            reduce_to_zero=self.reduce_to_zero,
+            bands=self.bands,
+            constant_multiplier=self.constant_multiplier,
+        )
+        if self.include_filenames:
+            return self.preprocess_func(arr_x), labels, im_fname
+        else:
+            return self.preprocess_func(arr_x), labels
 
     def __len__(self) -> int:
         """Return length of dataset."""
