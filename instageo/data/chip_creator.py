@@ -153,7 +153,7 @@ def setup() -> None:
 
     Configures relevant GDAL options for reading COGs
     """
-    earthaccess.login(persist=True, strategy="netrc")
+    earthaccess.login(persist=True)
     env = rasterio.Env(**GDALOptions().model_dump())
     env.__enter__()
 
